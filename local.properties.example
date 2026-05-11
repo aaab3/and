@@ -1,0 +1,13 @@
+## Copy this file to `local.properties` in the repo root and set `sdk.dir`.
+## When `sdk.dir` (or ANDROID_HOME / ANDROID_SDK_ROOT) is set, Gradle will include `:android-app`.
+## Example (Windows, Android Studio SDK):
+# sdk.dir=C\:\\Users\\YOU\\AppData\\Local\\Android\\Sdk
+##
+## This repo can also use a workspace-local SDK under `.android-sdk/` (see cmdline-tools there).
+## Install packages once (PowerShell), then `.\gradlew.bat :android-app:assembleDebug`:
+##   $r="C:\path\to\repo\.android-sdk"
+##   & "$r\cmdline-tools\latest\bin\sdkmanager.bat" --sdk_root=$r "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+##
+## Debug APK output: android-app\build\outputs\apk\debug\android-app-debug.apk
+##
+## Root `gradle.properties` enables AndroidX (required for Material/Room). `security-crypto` uses 1.1.0-alpha06 for MasterKey API.
