@@ -32,10 +32,7 @@ include(
     "model-provider",
     "conversation-runtime",
     "skill-package",
-    "workflow-definition",
-    "tool-runtime",
-    "knowledge",
-    "workflow-execution"
+    "tool-runtime"
 )
 
 val sdkProps = Properties()

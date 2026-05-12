@@ -1,10 +1,7 @@
 package com.runtime.binding
 
 enum class ProviderType {
-    OPENAI_COMPATIBLE,
-    ANTHROPIC_LIKE,
-    GEMINI_LIKE,
-    CUSTOM
+    OPENAI_COMPATIBLE
 }
 
 data class ProviderDefinition(

@@ -19,4 +19,7 @@ interface MessageDao {
         """
     )
     suspend fun listForConversation(conversationId: String): List<MessageEntity>
+
+    @Query("DELETE FROM messages WHERE id = :id")
+    suspend fun deleteById(id: String)
 }

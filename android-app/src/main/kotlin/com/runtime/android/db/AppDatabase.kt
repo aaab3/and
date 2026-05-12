@@ -6,13 +6,15 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [ConversationEntity::class, MessageEntity::class],
-    version = 1,
+    entities = [ConversationEntity::class, MessageEntity::class, ProviderEntity::class, SkillEntity::class],
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDao
     abstract fun messageDao(): MessageDao
+    abstract fun providerDao(): ProviderDao
+    abstract fun skillDao(): SkillDao
 
     companion object {
         @Volatile

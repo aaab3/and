@@ -12,6 +12,7 @@ dependencies {
     implementation(project(":binding-data"))
     implementation(project(":binding-runtime"))
     implementation(project(":model-provider"))
+    implementation(project(":tool-runtime"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     testImplementation(project(":binding-data-sqlite-jvm"))
     testImplementation(project(":conversation-data-sqlite-jvm"))

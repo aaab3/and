@@ -27,4 +27,16 @@ interface ConversationDao {
         """
     )
     suspend fun latestForWorkspace(workspaceId: String): ConversationEntity?
+
+    @Query(
+        """
+        SELECT * FROM conversations
+        WHERE workspaceId = :workspaceId
+        ORDER BY updatedAtEpochMs DESC
+        """
+    )
+    suspend fun allForWorkspace(workspaceId: String): List<ConversationEntity>
+
+    @Query("DELETE FROM conversations WHERE id = :id")
+    suspend fun delete(id: String)
 }

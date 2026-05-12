@@ -7,265 +7,161 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.yaml.snakeyaml.Yaml
 import java.io.File
-import java.io.IOException
-import java.nio.file.Files
-import java.util.zip.ZipFile
 
+/**
+ * v2 skill loader: supports both single .md files and directories.
+ *
+ * Directory structure:
+ *   skill-folder/
+ *   ├── SKILL.md          (required: frontmatter + body)
+ *   └── references/       (optional: all .md/.txt files are appended to context)
+ *       ├── guide-1.md
+ *       └── guide-2.md
+ *
+ * Single file: just a .md with frontmatter.
+ */
 class DefaultSkillPackageLoader : SkillPackageLoader {
 
     private val yaml = Yaml()
 
     override suspend fun load(source: SkillPackageSource): AppResult<LoadedSkillPackage> = withContext(Dispatchers.IO) {
         when (source) {
-            is SkillPackageSource.Directory -> loadFromDirectoryRoot(File(source.path))
-            is SkillPackageSource.ZipFile -> loadFromZip(File(source.path))
+            is SkillPackageSource.MarkdownFile -> loadFromFile(File(source.path))
+            is SkillPackageSource.Directory -> loadFromDirectory(File(source.path))
         }
     }
 
-    private fun loadFromZip(zip: File): AppResult<LoadedSkillPackage> {
-        if (!zip.isFile) {
-            return AppResult.Failure(AppError(ErrorCodes.INVALID_INPUT, message = "ZIP path is not a file"))
+    private fun loadFromDirectory(dir: File): AppResult<LoadedSkillPackage> {
+        if (!dir.isDirectory) {
+            return AppResult.Failure(AppError(ErrorCodes.INVALID_INPUT, "Not a directory"))
         }
-        val tempRoot = Files.createTempDirectory("skillpkg-zip-").toFile()
-        tempRoot.deleteOnExit()
-        return try {
-            unzipSafe(zip, tempRoot)
-            val skillRoot = findSkillPackageRoot(tempRoot)
-                ?: return AppResult.Failure(
-                    AppError(ErrorCodes.NOT_FOUND, message = "skill.md not found in ZIP archive")
-                )
-            loadFromSkillRoot(skillRoot)
-        } catch (e: IOException) {
-            AppResult.Failure(
-                AppError(ErrorCodes.STORAGE_ERROR, message = "Failed to read ZIP package", cause = e.message)
-            )
-        }
-    }
 
-    private fun loadFromDirectoryRoot(dir: File): AppResult<LoadedSkillPackage> {
-        if (!dir.exists() || !dir.isDirectory) {
-            return AppResult.Failure(
-                AppError(ErrorCodes.INVALID_INPUT, message = "Directory does not exist or is not a directory")
-            )
-        }
-        val skillRoot = findSkillPackageRoot(dir)
+        // Find the main skill file (SKILL.md or skill.md)
+        val skillFile = dir.listFiles()?.firstOrNull {
+            it.name.equals("SKILL.md", ignoreCase = true)
+        } ?: dir.listFiles()?.firstOrNull {
+            it.extension.equals("md", ignoreCase = true) && it.name.contains("skill", ignoreCase = true)
+        } ?: return AppResult.Failure(
+            AppError(ErrorCodes.NOT_FOUND, "No SKILL.md found in directory")
+        )
+
+        // Parse the main file
+        val raw = readFileText(skillFile) ?: return AppResult.Failure(
+            AppError(ErrorCodes.STORAGE_ERROR, "Failed to read ${skillFile.name}")
+        )
+
+        val (frontmatter, body) = splitFrontMatter(raw)
             ?: return AppResult.Failure(
-                AppError(ErrorCodes.NOT_FOUND, message = "skill.md not found under directory")
+                AppError(ErrorCodes.PARSE_ERROR, "SKILL.md must begin with YAML frontmatter (---)")
             )
-        return loadFromSkillRoot(skillRoot)
+
+        val manifest = parseManifest(frontmatter)
+            ?: return AppResult.Failure(
+                AppError(ErrorCodes.VALIDATION_FAILED, "Missing required field: name or description")
+            )
+
+        // Load reference files
+        val refsDir = File(dir, "references")
+        val refFiles = mutableListOf<String>()
+        val refContent = StringBuilder()
+
+        if (refsDir.isDirectory) {
+            refsDir.listFiles()
+                ?.filter { it.isFile && it.extension in listOf("md", "txt", "markdown") }
+                ?.sortedBy { it.name }
+                ?.forEach { refFile ->
+                    val text = readFileText(refFile)
+                    if (text != null) {
+                        refFiles.add(refFile.name)
+                        refContent.append("\n\n---\n# Reference: ${refFile.nameWithoutExtension}\n\n")
+                        refContent.append(text)
+                    }
+                }
+        }
+
+        // Combine body + references into full system prompt
+        val fullBody = if (refContent.isEmpty()) body
+            else "$body\n\n$refContent"
+
+        return AppResult.Success(
+            LoadedSkillPackage(
+                manifest = manifest,
+                markdownBody = fullBody,
+                sourcePath = dir.absolutePath,
+                referenceFiles = refFiles
+            )
+        )
     }
 
-    /**
-     * Accepts either `root/skill.md` or `root/<subdir>/skill.md` (single nested folder).
-     */
-    private fun findSkillPackageRoot(root: File): File? {
-        val direct = File(root, "skill.md")
-        if (direct.isFile) return root
-        root.listFiles()?.filter { it.isDirectory }?.forEach { sub ->
-            if (File(sub, "skill.md").isFile) return sub
+    private fun loadFromFile(file: File): AppResult<LoadedSkillPackage> {
+        if (!file.isFile) {
+            return AppResult.Failure(AppError(ErrorCodes.INVALID_INPUT, "File does not exist"))
         }
-        return null
-    }
 
-    private fun loadFromSkillRoot(skillRoot: File): AppResult<LoadedSkillPackage> {
-        val skillFile = File(skillRoot, "skill.md")
-        val raw = try {
-            skillFile.readText(Charsets.UTF_8)
-        } catch (e: Exception) {
-            return AppResult.Failure(
-                AppError(ErrorCodes.STORAGE_ERROR, message = "Failed to read skill.md", cause = e.message)
+        val raw = readFileText(file) ?: return AppResult.Failure(
+            AppError(ErrorCodes.STORAGE_ERROR, "Failed to read file")
+        )
+
+        val (frontmatter, body) = splitFrontMatter(raw)
+            ?: return AppResult.Failure(
+                AppError(ErrorCodes.PARSE_ERROR, "File must begin with YAML frontmatter (---)")
             )
-        }
 
-        val (frontmatter, body) = when (val split = splitFrontMatter(raw)) {
-            is AppResult.Failure -> return split
-            is AppResult.Success -> split.value
-        }
-
-        val yamlMap = when (val y = parseYamlMapping(frontmatter)) {
-            is AppResult.Failure -> return y
-            is AppResult.Success -> y.value
-        }
-
-        val manifest = when (val m = yamlToManifest(yamlMap)) {
-            is AppResult.Failure -> return m
-            is AppResult.Success -> m.value
-        }
-
-        if (manifest.workflow.contains("..") || manifest.workflow.startsWith(File.separator)) {
-            return AppResult.Failure(
-                AppError(
-                    code = ErrorCodes.INVALID_INPUT,
-                    message = "workflow path must be relative and must not contain '..'",
-                    metadata = mapOf("workflow" to manifest.workflow)
-                )
+        val manifest = parseManifest(frontmatter)
+            ?: return AppResult.Failure(
+                AppError(ErrorCodes.VALIDATION_FAILED, "Missing required field: name or description")
             )
-        }
-
-        val workflowFile = File(skillRoot, manifest.workflow).canonicalFile
-        val rootCanonical = skillRoot.canonicalFile
-        if (!workflowFile.path.startsWith(rootCanonical.path + File.separator) && workflowFile != rootCanonical) {
-            return AppResult.Failure(
-                AppError(ErrorCodes.INVALID_INPUT, message = "workflow path escapes package root")
-            )
-        }
-        if (!workflowFile.isFile) {
-            return AppResult.Failure(
-                AppError(
-                    code = ErrorCodes.NOT_FOUND,
-                    message = "workflow file not found",
-                    metadata = mapOf("workflow" to manifest.workflow)
-                )
-            )
-        }
-        if (workflowFile.length() == 0L) {
-            return AppResult.Failure(
-                AppError(ErrorCodes.VALIDATION_FAILED, message = "workflow file is empty")
-            )
-        }
-
-        val assetsDir = File(skillRoot, "assets")
-        val assetPaths = if (assetsDir.isDirectory) {
-            assetsDir.walkTopDown().maxDepth(10).filter { it.isFile }.map { it.absolutePath }.toList()
-        } else {
-            emptyList()
-        }
 
         return AppResult.Success(
             LoadedSkillPackage(
                 manifest = manifest,
                 markdownBody = body,
-                workflowFilePath = workflowFile.absolutePath,
-                assetPaths = assetPaths
+                sourcePath = file.absolutePath
             )
         )
     }
 
-    private fun splitFrontMatter(raw: String): AppResult<Pair<String, String>> {
+    private fun readFileText(file: File): String? = try {
+        file.readText(Charsets.UTF_8)
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun splitFrontMatter(raw: String): Pair<String, String>? {
         val text = raw.trimStart()
-        if (!text.startsWith("---")) {
-            return AppResult.Failure(
-                AppError(ErrorCodes.PARSE_ERROR, message = "skill.md must begin with YAML frontmatter delimited by ---")
-            )
-        }
+        if (!text.startsWith("---")) return null
         val afterFirst = text.removePrefix("---").trimStart()
-        val endMarker = Regex("\r?\n---\r?\n").find(afterFirst)
-            ?: return AppResult.Failure(
-                AppError(ErrorCodes.PARSE_ERROR, message = "skill.md frontmatter must end with a line --- before body")
-            )
+        val endMarker = Regex("\r?\n---\r?\n").find(afterFirst) ?: return null
         val fm = afterFirst.substring(0, endMarker.range.first).trim()
         val body = afterFirst.substring(endMarker.range.last + 1).trim()
-        return AppResult.Success(fm to body)
+        return fm to body
     }
 
-    private fun parseYamlMapping(frontmatter: String): AppResult<Map<String, Any?>> =
-        try {
-            when (val root = yaml.load<Any?>(frontmatter)) {
-                null -> AppResult.Failure(AppError(ErrorCodes.INVALID_INPUT, message = "Empty YAML frontmatter"))
-                is Map<*, *> -> {
-                    @Suppress("UNCHECKED_CAST")
-                    val m = root.entries.associate { (k, v) -> k.toString() to v } as Map<String, Any?>
-                    AppResult.Success(m)
-                }
-                else -> AppResult.Failure(
-                    AppError(ErrorCodes.PARSE_ERROR, message = "YAML frontmatter must be a mapping (object) at root")
-                )
-            }
-        } catch (e: Exception) {
-            AppResult.Failure(
-                AppError(ErrorCodes.PARSE_ERROR, message = "Invalid YAML in skill.md frontmatter", cause = e.message)
-            )
-        }
+    private fun parseManifest(frontmatter: String): SkillManifest? {
+        val map = try {
+            val root = yaml.load<Any?>(frontmatter)
+            if (root is Map<*, *>) {
+                @Suppress("UNCHECKED_CAST")
+                root.entries.associate { (k, v) -> k.toString() to v } as Map<String, Any?>
+            } else null
+        } catch (_: Exception) {
+            null
+        } ?: return null
 
-    private fun yamlToManifest(map: Map<String, Any?>): AppResult<SkillManifest> {
-        fun req(key: String): AppResult<String> {
-            val v = map[key]?.toString()?.trim()
-            return if (v.isNullOrEmpty()) {
-                AppResult.Failure(
-                    AppError(ErrorCodes.VALIDATION_FAILED, message = "Missing required manifest field: $key")
-                )
-            } else {
-                AppResult.Success(v)
-            }
-        }
-        val name = when (val r = req("name")) {
-            is AppResult.Failure -> return r
-            is AppResult.Success -> r.value
-        }
-        val description = when (val r = req("description")) {
-            is AppResult.Failure -> return r
-            is AppResult.Success -> r.value
-        }
-        val version = when (val r = req("version")) {
-            is AppResult.Failure -> return r
-            is AppResult.Success -> r.value
-        }
-        val workflow = when (val r = req("workflow")) {
-            is AppResult.Failure -> return r
-            is AppResult.Success -> r.value
-        }
+        val name = map["name"]?.toString()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val description = map["description"]?.toString()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
 
-        return AppResult.Success(
-            SkillManifest(
-                name = name,
-                description = description,
-                version = version,
-                workflow = workflow,
-                inputs = stringMapOrEmpty(map["inputs"]),
-                defaults = stringMapOrEmpty(map["defaults"]),
-                tools = stringListOrEmpty(map["tools"]),
-                permissions = stringListOrEmpty(map["permissions"]),
-                model = map["model"]?.toString()?.trim()?.takeIf { it.isNotEmpty() },
-                output = stringMapOrEmpty(map["output"])
-            )
+        return SkillManifest(
+            name = name,
+            description = description,
+            tools = stringList(map["tools"]),
+            model = map["model"]?.toString()?.trim()?.takeIf { it.isNotEmpty() }
         )
     }
 
-    private fun stringMapOrEmpty(obj: Any?): Map<String, String> {
-        if (obj !is Map<*, *>) return emptyMap()
-        return obj.entries.associate { (k, v) ->
-            k.toString() to when (v) {
-                null -> ""
-                is Map<*, *> -> v.entries.joinToString(",") { "${it.key}=${it.value}" }
-                is List<*> -> v.joinToString(",")
-                else -> v.toString()
-            }
-        }
-    }
-
-    private fun stringListOrEmpty(obj: Any?): List<String> =
-        when (obj) {
-            null -> emptyList()
-            is List<*> -> obj.mapNotNull { it?.toString()?.trim()?.takeIf { s -> s.isNotEmpty() } }
-            is String -> listOf(obj.trim()).filter { it.isNotEmpty() }
-            else -> emptyList()
-        }
-
-    private fun unzipSafe(zipFile: File, destDir: File) {
-        val destCanonicalBase = destDir.canonicalFile
-        ZipFile(zipFile).use { zip ->
-            val entries = zip.entries()
-            while (entries.hasMoreElements()) {
-                val entry = entries.nextElement()
-                if (entry.name.isBlank()) continue
-                val outFile = File(destDir, entry.name)
-                val outCanonical = outFile.canonicalFile
-                val basePath = destCanonicalBase.path + File.separator
-                if (entry.isDirectory) {
-                    if (!outCanonical.path.startsWith(destCanonicalBase.path) && outCanonical != destCanonicalBase) {
-                        throw IOException("Bad zip entry: ${entry.name}")
-                    }
-                    outFile.mkdirs()
-                    continue
-                }
-                if (!outCanonical.path.startsWith(basePath) && outCanonical != destCanonicalBase) {
-                    throw IOException("Bad zip entry: ${entry.name}")
-                }
-                outFile.parentFile?.mkdirs()
-                zip.getInputStream(entry).use { input ->
-                    outCanonical.outputStream().use { output -> input.copyTo(output) }
-                }
-            }
-        }
+    private fun stringList(obj: Any?): List<String> = when (obj) {
+        is List<*> -> obj.mapNotNull { it?.toString()?.trim()?.takeIf { s -> s.isNotEmpty() } }
+        is String -> obj.trim().takeIf { it.isNotEmpty() }?.let { listOf(it) } ?: emptyList()
+        else -> emptyList()
     }
 }

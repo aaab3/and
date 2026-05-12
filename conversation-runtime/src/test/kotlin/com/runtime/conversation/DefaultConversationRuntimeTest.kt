@@ -6,13 +6,10 @@ import com.runtime.binding.sqlite.BindingSqlitePersistence
 import com.runtime.conversation.sqlite.SqliteConversationPersistence
 import com.runtime.core.AppResult
 import com.runtime.core.ErrorCodes
-import com.runtime.model.AnthropicLikeModelProvider
 import com.runtime.model.DefaultProviderRegistry
-import com.runtime.model.GeminiLikeModelProvider
 import com.runtime.model.openai.OpenAiCompatibleModelProvider
 import com.runtime.secret.sqlite.SqliteSecretProvider
 import kotlinx.coroutines.runBlocking
-import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import java.nio.file.Files
@@ -59,9 +56,7 @@ class DefaultConversationRuntimeTest {
             )
             val registry = DefaultProviderRegistry(
                 listOf(
-                    OpenAiCompatibleModelProvider(OkHttpClient()),
-                    AnthropicLikeModelProvider(),
-                    GeminiLikeModelProvider()
+                    OpenAiCompatibleModelProvider()
                 )
             )
             val runtime = DefaultConversationRuntime(convPersistence.store, resolver, registry)
@@ -135,7 +130,7 @@ class DefaultConversationRuntimeTest {
                 secrets
             )
             val registry = DefaultProviderRegistry(
-                listOf(OpenAiCompatibleModelProvider(OkHttpClient()), AnthropicLikeModelProvider(), GeminiLikeModelProvider())
+                listOf(OpenAiCompatibleModelProvider())
             )
             val runtime = DefaultConversationRuntime(convPersistence.store, resolver, registry)
 
@@ -182,7 +177,7 @@ class DefaultConversationRuntimeTest {
                 bindPersistence.credentialRefRepository,
                 secrets
             )
-            val registry = DefaultProviderRegistry(listOf(OpenAiCompatibleModelProvider(OkHttpClient())))
+            val registry = DefaultProviderRegistry(listOf(OpenAiCompatibleModelProvider()))
             val runtime = DefaultConversationRuntime(convPersistence.store, resolver, registry)
             val r = runtime.sendMessage(
                 SendMessageRequest(workspaceId = "ws-1", conversationId = "no-such", userMessage = "a")
