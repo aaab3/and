@@ -6,8 +6,15 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [ConversationEntity::class, MessageEntity::class, ProviderEntity::class, SkillEntity::class],
-    version = 3,
+    entities = [
+        ConversationEntity::class,
+        MessageEntity::class,
+        ProviderEntity::class,
+        SkillEntity::class,
+        PromptTemplateEntity::class,
+        ScheduledTaskEntity::class
+    ],
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -15,6 +22,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun providerDao(): ProviderDao
     abstract fun skillDao(): SkillDao
+    abstract fun promptTemplateDao(): PromptTemplateDao
+    abstract fun scheduledTaskDao(): ScheduledTaskDao
 
     companion object {
         @Volatile

@@ -23,14 +23,15 @@ data class ProviderUiItem(
     val baseUrl: String,
     val apiKey: String,
     val modelId: String,
-    val isDefault: Boolean
+    val isDefault: Boolean,
+    val systemPrompt: String = ""
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     providers: List<ProviderUiItem>,
-    onAddProvider: (name: String, baseUrl: String, apiKey: String, modelId: String) -> Unit,
+    onAddProvider: (name: String, baseUrl: String, apiKey: String, modelId: String, systemPrompt: String) -> Unit,
     onEditProvider: (ProviderUiItem) -> Unit,
     onDeleteProvider: (String) -> Unit,
     onSetDefault: (String) -> Unit,
@@ -136,8 +137,8 @@ fun SettingsScreen(
             title = "添加模型服务",
             initial = null,
             onDismiss = { showAddDialog = false },
-            onSave = { name, url, key, model ->
-                onAddProvider(name, url, key, model)
+            onSave = { name, url, key, model, prompt ->
+                onAddProvider(name, url, key, model, prompt)
                 showAddDialog = false
             },
             onFetchModels = onFetchModels
@@ -150,8 +151,8 @@ fun SettingsScreen(
             title = "编辑模型服务",
             initial = provider,
             onDismiss = { editingProvider = null },
-            onSave = { name, url, key, model ->
-                onEditProvider(provider.copy(name = name, baseUrl = url, apiKey = key, modelId = model))
+            onSave = { name, url, key, model, prompt ->
+                onEditProvider(provider.copy(name = name, baseUrl = url, apiKey = key, modelId = model, systemPrompt = prompt))
                 editingProvider = null
             },
             onFetchModels = onFetchModels
@@ -216,13 +217,14 @@ private fun ProviderEditorDialog(
     title: String,
     initial: ProviderUiItem?,
     onDismiss: () -> Unit,
-    onSave: (name: String, baseUrl: String, apiKey: String, modelId: String) -> Unit,
+    onSave: (name: String, baseUrl: String, apiKey: String, modelId: String, systemPrompt: String) -> Unit,
     onFetchModels: suspend (baseUrl: String, apiKey: String) -> List<String> = { _, _ -> emptyList() }
 ) {
     var name by remember { mutableStateOf(initial?.name ?: "") }
     var baseUrl by remember { mutableStateOf(initial?.baseUrl ?: "https://api.openai.com/v1") }
     var apiKey by remember { mutableStateOf(initial?.apiKey ?: "") }
     var modelId by remember { mutableStateOf(initial?.modelId ?: "gpt-4o-mini") }
+    var systemPrompt by remember { mutableStateOf(initial?.systemPrompt ?: "") }
     var showKey by remember { mutableStateOf(false) }
     var modelList by remember { mutableStateOf<List<String>>(emptyList()) }
     var isLoadingModels by remember { mutableStateOf(false) }
@@ -308,11 +310,21 @@ private fun ProviderEditorDialog(
                         }
                     }
                 }
+                // System Prompt
+                OutlinedTextField(
+                    value = systemPrompt,
+                    onValueChange = { systemPrompt = it },
+                    label = { Text("系统提示词（可选）") },
+                    placeholder = { Text("你是一个简洁的助手，回答用中文") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4
+                )
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { onSave(name.trim(), baseUrl.trim(), apiKey.trim(), modelId.trim()) },
+                onClick = { onSave(name.trim(), baseUrl.trim(), apiKey.trim(), modelId.trim(), systemPrompt.trim()) },
                 enabled = name.isNotBlank() && baseUrl.isNotBlank() && apiKey.isNotBlank() && modelId.isNotBlank()
             ) {
                 Text("保存")

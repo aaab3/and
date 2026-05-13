@@ -15,5 +15,6 @@ data class ProviderEntity(
     val secretAlias: String,
     val modelId: String,
     val isDefault: Boolean = false,
+    val systemPrompt: String = "",
     val createdAtEpochMs: Long
 )

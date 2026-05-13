@@ -11,6 +11,7 @@ import androidx.lifecycle.lifecycleScope
 import com.runtime.android.db.AppDatabase
 import com.runtime.android.db.ProviderEntity
 import com.runtime.android.db.SkillEntity
+import com.runtime.android.db.ScheduledTaskEntity
 import com.runtime.android.db.RoomConversationRepository
 import com.runtime.android.db.RoomMessageRepository
 import com.runtime.android.security.AndroidSecretProvider
@@ -53,6 +54,8 @@ class MainActivity : ComponentActivity() {
     private val providersFlow = MutableStateFlow<List<ProviderUiItem>>(emptyList())
     private val conversationsFlow = MutableStateFlow<List<ConversationItem>>(emptyList())
     private val skillsFlow = MutableStateFlow<List<SkillUiItem>>(emptyList())
+    private val promptTemplatesFlow = MutableStateFlow<List<com.runtime.android.ui.chat.PromptTemplate>>(emptyList())
+    private val scheduledTasksFlow = MutableStateFlow<List<com.runtime.android.ui.tasks.ScheduledTaskUiItem>>(emptyList())
     private val skillBodies = mutableMapOf<String, String>()
 
     private var currentRuntime: ConversationRuntime? = null
@@ -102,6 +105,8 @@ class MainActivity : ComponentActivity() {
             refreshProviders()
             refreshConversations()
             refreshSkills()
+            refreshTasks()
+            refreshPromptTemplates()
             rebuildRuntime()
 
             val convs = conversationsFlow.value
@@ -116,12 +121,17 @@ class MainActivity : ComponentActivity() {
             val providers by providersFlow.collectAsState()
             val conversations by conversationsFlow.collectAsState()
             val skills by skillsFlow.collectAsState()
+            val templates by promptTemplatesFlow.collectAsState()
+            val tasks by scheduledTasksFlow.collectAsState()
 
             RuntimeApp(
                 chatViewModel = chatViewModel,
                 conversations = conversations,
                 providers = providers,
                 skills = skills,
+                promptTemplates = templates,
+                scheduledTasks = tasks,
+                availableTools = toolRegistry.listTools().map { it.name },
                 onSelectConversation = { id -> chatViewModel.loadConversation(id) },
                 onNewChat = { lifecycleScope.launch { createNewChat() } },
                 onDeleteConversation = { id ->
@@ -130,8 +140,8 @@ class MainActivity : ComponentActivity() {
                         refreshConversations()
                     }
                 },
-                onAddProvider = { name, baseUrl, apiKey, modelId ->
-                    lifecycleScope.launch { addProvider(name, baseUrl, apiKey, modelId) }
+                onAddProvider = { name, baseUrl, apiKey, modelId, systemPrompt ->
+                    lifecycleScope.launch { addProvider(name, baseUrl, apiKey, modelId, systemPrompt) }
                 },
                 onEditProvider = { item ->
                     lifecycleScope.launch { updateProvider(item) }
@@ -153,6 +163,21 @@ class MainActivity : ComponentActivity() {
                         withContext(Dispatchers.IO) { db.skillDao().delete(name) }
                         refreshSkills()
                     }
+                },
+                onCreateSkill = { name, desc, body, tools ->
+                    lifecycleScope.launch { createSkillInApp(name, desc, body, tools) }
+                },
+                onAddTask = { name, skillName, prompt, schedule ->
+                    lifecycleScope.launch { addScheduledTask(name, skillName, prompt, schedule) }
+                },
+                onToggleTask = { id, enabled ->
+                    lifecycleScope.launch { toggleTask(id, enabled) }
+                },
+                onDeleteTask = { id ->
+                    lifecycleScope.launch {
+                        withContext(Dispatchers.IO) { db.scheduledTaskDao().delete(id) }
+                        refreshTasks()
+                    }
                 }
             )
         }
@@ -160,14 +185,14 @@ class MainActivity : ComponentActivity() {
 
     // --- Provider management ---
 
-    private suspend fun addProvider(name: String, baseUrl: String, apiKey: String, modelId: String) {
+    private suspend fun addProvider(name: String, baseUrl: String, apiKey: String, modelId: String, systemPrompt: String) {
         val id = UUID.randomUUID().toString()
         val alias = "provider-key-$id"
         withContext(Dispatchers.IO) {
             secrets.putSecret(alias, apiKey)
             val isFirst = db.providerDao().getAll().isEmpty()
             db.providerDao().upsert(
-                ProviderEntity(id, name, baseUrl.trimEnd('/'), alias, modelId, isFirst, System.currentTimeMillis())
+                ProviderEntity(id, name, baseUrl.trimEnd('/'), alias, modelId, isFirst, systemPrompt, System.currentTimeMillis())
             )
         }
         refreshProviders()
@@ -179,7 +204,12 @@ class MainActivity : ComponentActivity() {
         withContext(Dispatchers.IO) {
             secrets.putSecret(alias, item.apiKey)
             val existing = db.providerDao().getById(item.id) ?: return@withContext
-            db.providerDao().upsert(existing.copy(name = item.name, baseUrl = item.baseUrl.trimEnd('/'), modelId = item.modelId))
+            db.providerDao().upsert(existing.copy(
+                name = item.name,
+                baseUrl = item.baseUrl.trimEnd('/'),
+                modelId = item.modelId,
+                systemPrompt = item.systemPrompt
+            ))
         }
         refreshProviders()
         rebuildRuntime()
@@ -327,7 +357,7 @@ class MainActivity : ComponentActivity() {
                     is AppResult.Failure -> ""
                 }
             }
-            ProviderUiItem(e.id, e.name, e.baseUrl, key, e.modelId, e.isDefault)
+            ProviderUiItem(e.id, e.name, e.baseUrl, key, e.modelId, e.isDefault, e.systemPrompt)
         }
     }
 
@@ -356,8 +386,6 @@ class MainActivity : ComponentActivity() {
         val skills = skillsFlow.value
         val skill = skills.find { it.name == skillName } ?: return null
 
-        // Get the full body from DB (skillsFlow only has UI items, need the body from Room)
-        // For simplicity, we cache the body in a map when refreshing skills
         val body = skillBodies[skillName] ?: return null
 
         val defaultProvider = runBlocking { db.providerDao().getDefault() } ?: return null
@@ -368,14 +396,33 @@ class MainActivity : ComponentActivity() {
             }
         } ?: return null
 
-        // Build tool specs from skill's declared tools
-        val toolSpecs = skill.tools.mapNotNull { toolName ->
+        // If skill declared no tools, make ALL registered tools available.
+        // This handles Claude-style skills that mention tools in the prompt body
+        // but don't declare them in frontmatter.
+        val activeToolNames = if (skill.tools.isEmpty()) {
+            toolRegistry.listTools().map { it.name }
+        } else {
+            skill.tools
+        }
+
+        // Build tool specs for the model
+        val toolSpecs = activeToolNames.mapNotNull { toolName ->
             when (val t = toolRegistry.getTool(toolName)) {
                 is AppResult.Success -> {
                     val m = t.value.manifest
                     ModelToolSpec(name = m.name, description = m.description, inputSchemaJson = m.inputSchemaJson)
                 }
                 is AppResult.Failure -> null
+            }
+        }
+
+        // Augment system prompt with concise tool instructions
+        val augmentedBody = buildString {
+            append(body)
+            if (toolSpecs.isNotEmpty()) {
+                append("\n\n[Tools: ")
+                append(toolSpecs.joinToString(", ") { it.name })
+                append("]\nCall format: <tool_call><function=NAME><parameter=KEY>VALUE</parameter></function></tool_call>")
             }
         }
 
@@ -386,7 +433,7 @@ class MainActivity : ComponentActivity() {
             bindingResolver = resolver,
             providerRegistry = registry,
             toolRegistry = toolRegistry,
-            systemPrompt = body,
+            systemPrompt = augmentedBody,
             tools = toolSpecs
         )
     }
@@ -402,11 +449,13 @@ class MainActivity : ComponentActivity() {
 
         val resolver = SimpleBindingResolver(defaultProvider, secretValue)
         val registry = DefaultProviderRegistry(listOf(OpenAiCompatibleModelProvider()))
+        val globalPrompt = defaultProvider.systemPrompt.takeIf { it.isNotBlank() }
         currentRuntime = DefaultConversationRuntime(
             conversationStore = store,
             bindingResolver = resolver,
             providerRegistry = registry,
-            toolRegistry = toolRegistry
+            toolRegistry = toolRegistry,
+            systemPrompt = globalPrompt
         )
     }
 
@@ -421,8 +470,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private suspend fun generateTitle(conversationId: String, userMsg: String, assistantMsg: String) {
-        // Simple approach: use first 20 chars of user message as title
-        // A more advanced approach would call the model, but that costs tokens
         val title = userMsg.take(20).trim().ifEmpty { "新对话" }
         withContext(Dispatchers.IO) {
             val entity = db.conversationDao().getById(conversationId) ?: return@withContext
@@ -430,5 +477,78 @@ class MainActivity : ComponentActivity() {
         }
         chatViewModel.updateTitle(title)
         refreshConversations()
+    }
+
+    // --- Create skill in-app ---
+
+    private suspend fun createSkillInApp(name: String, description: String, body: String, tools: List<String>) {
+        val toolsJson = "[" + tools.joinToString(",") { "\"$it\"" } + "]"
+        withContext(Dispatchers.IO) {
+            db.skillDao().upsert(
+                SkillEntity(
+                    name = name,
+                    description = description,
+                    body = body,
+                    toolsJson = toolsJson,
+                    model = null,
+                    sourcePath = "app://created",
+                    referenceCount = 0,
+                    installedAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        }
+        refreshSkills()
+    }
+
+    // --- Scheduled tasks ---
+
+    private suspend fun addScheduledTask(name: String, skillName: String?, prompt: String, schedule: String) {
+        val id = UUID.randomUUID().toString()
+        withContext(Dispatchers.IO) {
+            db.scheduledTaskDao().upsert(
+                ScheduledTaskEntity(
+                    id = id,
+                    name = name,
+                    skillName = skillName,
+                    prompt = prompt,
+                    cronExpression = schedule,
+                    enabled = true,
+                    lastRunEpochMs = null,
+                    createdAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        }
+        refreshTasks()
+        // TODO: schedule with WorkManager
+    }
+
+    private suspend fun toggleTask(id: String, enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            val entity = db.scheduledTaskDao().getAll().find { it.id == id } ?: return@withContext
+            db.scheduledTaskDao().upsert(entity.copy(enabled = enabled))
+        }
+        refreshTasks()
+    }
+
+    private suspend fun refreshTasks() {
+        val all = withContext(Dispatchers.IO) { db.scheduledTaskDao().getAll() }
+        scheduledTasksFlow.value = all.map { e ->
+            com.runtime.android.ui.tasks.ScheduledTaskUiItem(
+                id = e.id,
+                name = e.name,
+                skillName = e.skillName,
+                prompt = e.prompt,
+                schedule = e.cronExpression,
+                enabled = e.enabled,
+                lastRun = e.lastRunEpochMs?.let { "已运行" }
+            )
+        }
+    }
+
+    private suspend fun refreshPromptTemplates() {
+        val all = withContext(Dispatchers.IO) { db.promptTemplateDao().getAll() }
+        promptTemplatesFlow.value = all.map { e ->
+            com.runtime.android.ui.chat.PromptTemplate(command = e.command, promptText = e.promptText)
+        }
     }
 }

@@ -16,38 +16,56 @@ fun InputBar(
     onSend: (String) -> Unit,
     enabled: Boolean,
     skillSuggestions: List<SkillSuggestion> = emptyList(),
+    promptTemplates: List<PromptTemplate> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     var text by remember { mutableStateOf("") }
-    var showSuggestions by remember { mutableStateOf(false) }
+    var showSkillSuggestions by remember { mutableStateOf(false) }
+    var showTemplateSuggestions by remember { mutableStateOf(false) }
 
-    // Filter suggestions based on current @ prefix
-    val filteredSuggestions = remember(text, skillSuggestions) {
+    // Filter skill suggestions
+    val filteredSkills = remember(text, skillSuggestions) {
         val trimmed = text.trimStart()
         if (trimmed.startsWith("@") && !trimmed.contains(' ')) {
             val prefix = trimmed.removePrefix("@").lowercase()
             skillSuggestions.filter { it.name.lowercase().startsWith(prefix) }
-        } else {
-            emptyList()
-        }
+        } else emptyList()
     }
 
-    // Show popup when there are matches
-    LaunchedEffect(filteredSuggestions) {
-        showSuggestions = filteredSuggestions.isNotEmpty()
+    // Filter template suggestions
+    val filteredTemplates = remember(text, promptTemplates) {
+        val trimmed = text.trimStart()
+        if (trimmed.startsWith("/") && !trimmed.contains(' ')) {
+            val prefix = trimmed.removePrefix("/").lowercase()
+            promptTemplates.filter { it.command.lowercase().startsWith(prefix) }
+        } else emptyList()
     }
+
+    LaunchedEffect(filteredSkills) { showSkillSuggestions = filteredSkills.isNotEmpty() }
+    LaunchedEffect(filteredTemplates) { showTemplateSuggestions = filteredTemplates.isNotEmpty() }
 
     Box(modifier = modifier) {
-        // Suggestion popup (appears above the input bar)
-        if (showSuggestions) {
+        // Skill popup
+        if (showSkillSuggestions) {
             Box(modifier = Modifier.align(Alignment.TopStart)) {
                 SkillSuggestionPopup(
-                    suggestions = filteredSuggestions,
-                    onSelect = { name ->
-                        text = "@$name "
-                        showSuggestions = false
+                    suggestions = filteredSkills,
+                    onSelect = { name -> text = "@$name "; showSkillSuggestions = false },
+                    onDismiss = { showSkillSuggestions = false }
+                )
+            }
+        }
+
+        // Template popup
+        if (showTemplateSuggestions) {
+            Box(modifier = Modifier.align(Alignment.TopStart)) {
+                PromptTemplatePopup(
+                    templates = filteredTemplates,
+                    onSelect = { template ->
+                        text = template.promptText.replace("{input}", "")
+                        showTemplateSuggestions = false
                     },
-                    onDismiss = { showSuggestions = false }
+                    onDismiss = { showTemplateSuggestions = false }
                 )
             }
         }
@@ -64,7 +82,7 @@ fun InputBar(
                     value = text,
                     onValueChange = { text = it },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("消息 或 @技能...") },
+                    placeholder = { Text("消息 / @技能 / /模板") },
                     shape = RoundedCornerShape(24.dp),
                     maxLines = 4,
                     enabled = enabled

@@ -106,12 +106,22 @@ class ChatViewModel(
                         }
                     }
                     is SendMessageEvent.Delta -> {
-                        streamingText.append(event.text)
-                        val current = streamingText.toString()
-                        _uiState.update { state ->
-                            state.copy(messages = state.messages.map {
-                                if (it.id == tempAssistantId) it.copy(content = current) else it
-                            })
+                        // Special marker: reset the streaming message content
+                        if (event.text == "\u0000CLEAR\u0000") {
+                            streamingText.clear()
+                            _uiState.update { state ->
+                                state.copy(messages = state.messages.map {
+                                    if (it.id == tempAssistantId) it.copy(content = "") else it
+                                })
+                            }
+                        } else {
+                            streamingText.append(event.text)
+                            val current = streamingText.toString()
+                            _uiState.update { state ->
+                                state.copy(messages = state.messages.map {
+                                    if (it.id == tempAssistantId) it.copy(content = current) else it
+                                })
+                            }
                         }
                     }
                     is SendMessageEvent.ToolExecuting -> {

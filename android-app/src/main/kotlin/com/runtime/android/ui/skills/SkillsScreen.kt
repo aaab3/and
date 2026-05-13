@@ -30,6 +30,7 @@ fun SkillsScreen(
     onImportFile: () -> Unit,
     onImportFolder: () -> Unit,
     onDelete: (String) -> Unit,
+    onCreate: () -> Unit = {},
     onBack: () -> Unit
 ) {
     var selectedSkill by remember { mutableStateOf<SkillUiItem?>(null) }
@@ -52,6 +53,11 @@ fun SkillsScreen(
                     Icon(Icons.Default.Add, contentDescription = "导入技能")
                 }
                 DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("创建新技能") },
+                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                        onClick = { showMenu = false; onCreate() }
+                    )
                     DropdownMenuItem(
                         text = { Text("导入单个文件") },
                         leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },

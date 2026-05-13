@@ -20,7 +20,8 @@ fun ChatScreen(
     viewModel: ChatViewModel,
     onOpenDrawer: () -> Unit,
     onOpenSettings: () -> Unit,
-    skillSuggestions: List<SkillSuggestion> = emptyList()
+    skillSuggestions: List<SkillSuggestion> = emptyList(),
+    promptTemplates: List<PromptTemplate> = emptyList()
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
@@ -72,7 +73,8 @@ fun ChatScreen(
                     }
                 },
                 enabled = !uiState.isSending,
-                skillSuggestions = skillSuggestions
+                skillSuggestions = skillSuggestions,
+                promptTemplates = promptTemplates
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }

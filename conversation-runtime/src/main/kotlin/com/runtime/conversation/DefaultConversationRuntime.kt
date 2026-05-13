@@ -165,6 +165,7 @@ class DefaultConversationRuntime(
             val streamText = StringBuilder()
             val streamToolCalls = mutableListOf<ModelToolCall>()
             var streamError: String? = null
+            var sawToolCallXml = false
 
             provider.generateStream(resolved, generateRequest).collect { chunk ->
                 if (chunk.error != null) {
@@ -173,7 +174,17 @@ class DefaultConversationRuntime(
                 }
                 if (chunk.deltaText.isNotEmpty()) {
                     streamText.append(chunk.deltaText)
-                    emit(SendMessageEvent.Delta(chunk.deltaText))
+                    // If we detect XML tool call markers, stop streaming to UI
+                    // (we'll replay clean text after parsing)
+                    if (!sawToolCallXml) {
+                        if (streamText.contains("<tool_call>") || streamText.contains("<function=")) {
+                            sawToolCallXml = true
+                            // Signal that content is being reinterpreted
+                            emit(SendMessageEvent.Delta("\u0000CLEAR\u0000"))
+                        } else {
+                            emit(SendMessageEvent.Delta(chunk.deltaText))
+                        }
+                    }
                 }
                 if (chunk.isDone) {
                     streamToolCalls.addAll(chunk.toolCalls)
@@ -185,19 +196,43 @@ class DefaultConversationRuntime(
                 return@flow
             }
 
-            assistantTextBuilder.append(streamText)
+            // Check for text-based tool calls (Claude-style XML) when native tool calls are absent
+            val effectiveToolCalls = if (streamToolCalls.isNotEmpty() || toolRegistry == null) {
+                streamToolCalls
+            } else {
+                val (parsedCalls, _) = TextToolCallParser.parse(streamText.toString())
+                if (parsedCalls.isNotEmpty()) {
+                    TextToolCallParser.toModelToolCalls(parsedCalls) { name ->
+                        toolRegistry.getTool(name) is AppResult.Success
+                    }
+                } else emptyList()
+            }
+
+            // Clean text shown to user (strip tool_call XML)
+            val cleanText = if (sawToolCallXml) {
+                TextToolCallParser.parse(streamText.toString()).second
+            } else {
+                streamText.toString()
+            }
+
+            // If we had to clean the text, emit the cleaned version so UI shows it
+            if (sawToolCallXml && cleanText.isNotEmpty()) {
+                emit(SendMessageEvent.Delta(cleanText))
+            }
+
+            assistantTextBuilder.append(cleanText)
 
             // No tool calls → we're done
-            if (streamToolCalls.isEmpty() || toolRegistry == null) break
+            if (effectiveToolCalls.isEmpty()) break
 
             loopCount++
             if (loopCount > maxToolLoops) break
 
-            // Add assistant message with tool calls
+            // Add assistant message to context (using original text so model sees its own output)
             modelMessages.add(ModelMessage(role = "assistant", content = streamText.toString()))
 
             // Execute each tool
-            for (toolCall in streamToolCalls) {
+            for (toolCall in effectiveToolCalls) {
                 emit(SendMessageEvent.ToolExecuting(toolCall.name, toolCall.argumentsJson))
                 val toolResult = executeToolCall(toolCall, request)
                 val isError = toolResult.contains("\"error\"")

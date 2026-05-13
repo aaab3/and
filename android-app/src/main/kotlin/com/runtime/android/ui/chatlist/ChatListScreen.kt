@@ -31,6 +31,7 @@ fun ChatListScreen(
     onDelete: (String) -> Unit,
     onOpenSettings: () -> Unit = {},
     onOpenSkills: () -> Unit = {},
+    onOpenTasks: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier.fillMaxSize()) {
@@ -84,6 +85,11 @@ fun ChatListScreen(
             headlineContent = { Text("技能") },
             leadingContent = { Icon(Icons.Default.AutoAwesome, contentDescription = null) },
             modifier = Modifier.clickable(onClick = onOpenSkills)
+        )
+        ListItem(
+            headlineContent = { Text("定时任务") },
+            leadingContent = { Icon(Icons.Default.Schedule, contentDescription = null) },
+            modifier = Modifier.clickable(onClick = onOpenTasks)
         )
         ListItem(
             headlineContent = { Text("设置") },
